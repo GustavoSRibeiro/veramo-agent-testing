@@ -21,6 +21,7 @@
     "@veramo/key-manager": "^7.0.0",
     "@veramo/kms-local": "^7.0.0",
     "dotenv": "^17.4.2",
+    "ethers": "^6.17.0",
     "ethr-did-resolver": "^13.0.0",
     "sqlite3": "^5.1.7",
     "ts-node": "^10.9.2",
