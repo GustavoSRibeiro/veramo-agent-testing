@@ -1,6 +1,7 @@
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import hre from 'hardhat'
+import "@nomicfoundation/hardhat-ethers";
 
 async function main() {
     const [unifesp, ru] = await hre.ethers.getSigners()

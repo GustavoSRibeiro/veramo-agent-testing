@@ -2,31 +2,25 @@ import 'dotenv/config'
 import express from 'express'
 import bcrypt from 'bcrypt'
 import QRCode from 'qrcode'
-import { readFileSync, existsSync } from 'fs'
 import { agent } from './veramo/setup.js'
 import { randomUUID } from 'crypto'
-import { getLocalIP } from '../utils.js'
+import { getLocalIP, getContractAddress } from '../utils.js'
 import { ethers } from 'ethers'
-import { getContractAddress } from '../utils.js'
+import { getAluno } from '../database.js'
 
 const app = express()
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
-const PORT = process.env.PORT_HOLDER ? parseInt(process.env.PORT_HOLDER) : (process.env.PORT ? parseInt(process.env.PORT) : 3001)
+const PORT = process.env.PORT_HOLDER ? parseInt(process.env.PORT_HOLDER) : 3001
 const RPC_URL = process.env.HARDHAT_RPC_URL!
 const CONTRACT_ABI = [
     'function consultarSaldo(string memory ra) public view returns (uint256)',
 ]
 
-const DB_FILE = './credentials/alunos.json'
-
-function loadDB(): Record<string, any> {
-    if (!existsSync(DB_FILE)) return {}
-    return JSON.parse(readFileSync(DB_FILE, 'utf-8'))
-}
-
 const vpStore: Record<string, { vp: any, expira: number }> = {}
 const sessions: Record<string, string> = {} // sessionToken -> ra
+
+const LOCAL_IP = getLocalIP()
 
 const HTML = (content: string) => `
 <!DOCTYPE html>
@@ -59,9 +53,9 @@ const HTML = (content: string) => `
 // Página de login do aluno
 app.get('/aluno/:ra', (req, res) => {
     const { ra } = req.params
-    const db = loadDB()
+    const aluno = getAluno(ra)
 
-    if (!db[ra]) {
+    if (!aluno) {
         res.send(HTML('<h2>❌ Aluno não encontrado.</h2>'))
         return
     }
@@ -79,7 +73,7 @@ app.get('/aluno/:ra', (req, res) => {
     res.send(HTML(`
     <h2>🎓 Carteira UNIFESP</h2>
     <p>RA: <strong>${ra}</strong></p>
-    <p>${db[ra].nome}</p>
+    <p>${aluno.nome}</p>
     ${err}
     <form action="/aluno/${ra}/login" method="POST">
       <input type="password" name="senha" placeholder="Senha" required />
@@ -92,14 +86,14 @@ app.get('/aluno/:ra', (req, res) => {
 app.post('/aluno/:ra/login', async (req, res) => {
     const { ra } = req.params
     const { senha } = req.body
-    const db = loadDB()
+    const aluno = getAluno(ra)
 
-    if (!db[ra]) {
+    if (!aluno) {
         res.redirect(`/aluno/${ra}?err=Aluno não encontrado.`)
         return
     }
 
-    const ok = await bcrypt.compare(senha, db[ra].senhaHash)
+    const ok = await bcrypt.compare(senha, aluno.senha_hash)
     if (!ok) {
         res.redirect(`/aluno/${ra}?err=Senha incorreta.`)
         return
@@ -114,9 +108,9 @@ app.post('/aluno/:ra/login', async (req, res) => {
 // QR code do aluno
 app.get('/aluno/:ra/qr', async (req, res) => {
     const { ra } = req.params
-    const db = loadDB()
+    const aluno = getAluno(ra)
 
-    if (!db[ra]) {
+    if (!aluno) {
         res.send(HTML('<h2>❌ Aluno não encontrado.</h2>'))
         return
     }
@@ -128,8 +122,6 @@ app.get('/aluno/:ra/qr', async (req, res) => {
         res.redirect(`/aluno/${ra}?err=Acesso negado. Por favor, faça login.`)
         return
     }
-
-    const aluno = db[ra]
 
     try {
         // Busca o DID do aluno pelo alias
@@ -145,11 +137,11 @@ app.get('/aluno/:ra/qr', async (req, res) => {
         })
 
         // Token de uso único, válido por 2 minutos
-        const token = randomUUID()
+        const vpToken = randomUUID()
         const expira = Date.now() + 2 * 60 * 1000
-        vpStore[token] = { vp, expira }
+        vpStore[vpToken] = { vp, expira }
 
-        const qrUrl = `http://${LOCAL_IP}:${PORT}/vp/${token}`
+        const qrUrl = `http://${LOCAL_IP}:${PORT}/vp/${vpToken}`
         const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 280 })
         const expiraDate = new Date(expira)
 
@@ -195,8 +187,6 @@ app.get('/vp/:token', (req, res) => {
     delete vpStore[token]
     res.json({ vp: entry.vp })
 })
-
-const LOCAL_IP = getLocalIP()
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Carteira do aluno rodando em http://localhost:${PORT}`)
