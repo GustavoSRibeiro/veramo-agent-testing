@@ -2,15 +2,15 @@ import 'dotenv/config'
 import express from 'express'
 import { ethers } from 'ethers'
 import { agent } from './veramo/setup.js'
+import { getLocalIP, getContractAddress } from '../utils.js'
 
 const app = express()
 app.use(express.json())
 const PORT = 3002
 
-const CONTRACT_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
-const RU_PRIVATE_KEY = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
-const RPC_URL = 'http://127.0.0.1:8545'
-const HOLDER_SERVER = 'http://192.168.15.7:3001'
+const RU_PRIVATE_KEY = process.env.RU_PRIVATE_KEY!
+const RPC_URL = process.env.HARDHAT_RPC_URL!
+const LOCAL_IP = getLocalIP()
 
 const CONTRACT_ABI = [
     'function consultarSaldo(string memory ra) public view returns (uint256)',
@@ -124,7 +124,7 @@ app.get('/verificar', async (req, res) => {
         // 4. Conectar ao contrato
         const provider = new ethers.JsonRpcProvider(RPC_URL)
         const ruWallet = new ethers.Wallet(RU_PRIVATE_KEY, provider)
-        const contrato = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, ruWallet)
+        const contrato = new ethers.Contract(getContractAddress(), CONTRACT_ABI, ruWallet)
 
         // 5. Verificar saldo
         const saldoAntes = await contrato.consultarSaldo(ra)
@@ -153,5 +153,5 @@ app.get('/verificar', async (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Terminal RU rodando em http://localhost:${PORT}`)
-    console.log(`Acesse pelo celular: http://192.168.15.7:${PORT}`)
+    console.log(`Acesse pelo celular: http://${LOCAL_IP}:${PORT}`)
 })

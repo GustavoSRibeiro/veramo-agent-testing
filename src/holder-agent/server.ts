@@ -5,6 +5,7 @@ import QRCode from 'qrcode'
 import { readFileSync, existsSync } from 'fs'
 import { agent } from './veramo/setup.js'
 import { randomUUID } from 'crypto'
+import { getLocalIP } from '../utils.js'
 
 const app = express()
 app.use(express.json())
@@ -122,7 +123,7 @@ app.get('/aluno/:ra/qr', async (req, res) => {
         const expira = Date.now() + 2 * 60 * 1000
         vpStore[token] = { vp, expira }
 
-        const qrUrl = `http://192.168.15.7:3001/vp/${token}`
+        const qrUrl = `http://${LOCAL_IP}:3001/vp/${token}`
         const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 280 })
         const expiraDate = new Date(expira)
 
@@ -160,7 +161,9 @@ app.get('/vp/:token', (req, res) => {
     res.json({ vp: entry.vp })
 })
 
+const LOCAL_IP = getLocalIP()
+
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`Carteira do aluno rodando em http://localhost:${PORT}`)
-    console.log(`Acesse: http://192.168.15.7:${PORT}/aluno/[RA]`)
+    console.log(`Acesse: http://${LOCAL_IP}:${PORT}/aluno/[RA]`)
 })

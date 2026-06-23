@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { ethers } from 'ethers'
 import { agent } from './veramo/setup.js'
 import { agent as holderAgent } from '../holder-agent/veramo/setup.js'
+import { getLocalIP, getContractAddress, getNgrokUrl } from '../utils.js'
 
 const app = express()
 app.use(express.json())
@@ -12,9 +13,9 @@ app.use(express.urlencoded({ extended: true }))
 const PORT = 3000
 
 const DB_FILE = './credentials/alunos.json'
-const CONTRACT_ADDRESS = '0x5FbDB2315678afecb367f032d93F642f64180aa3'
-const UNIFESP_PRIVATE_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
-const RPC_URL = 'http://127.0.0.1:8545'
+const UNIFESP_PRIVATE_KEY = process.env.UNIFESP_PRIVATE_KEY!
+const RPC_URL = process.env.HARDHAT_RPC_URL!
+const LOCAL_IP = getLocalIP()
 
 const CONTRACT_ABI = [
     'function adicionarCreditos(string memory ra, uint256 quantidade) public',
@@ -77,7 +78,7 @@ const HTML = (content: string, title = 'Portal UNIFESP') => `
 app.get('/', async (req, res) => {
     const db = loadDB()
     const provider = new ethers.JsonRpcProvider(RPC_URL)
-    const contrato = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider)
+    const contrato = new ethers.Contract(getContractAddress(), CONTRACT_ABI, provider)
 
     let rows = ''
     for (const ra in db) {
@@ -168,7 +169,7 @@ app.post('/cadastrar', async (req, res) => {
 app.get('/creditos', async (req, res) => {
     const db = loadDB()
     const provider = new ethers.JsonRpcProvider(RPC_URL)
-    const contrato = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider)
+    const contrato = new ethers.Contract(getContractAddress(), CONTRACT_ABI, provider)
 
     let options = ''
     for (const ra in db) {
@@ -200,7 +201,7 @@ app.post('/creditos/adicionar', async (req, res) => {
     try {
         const provider = new ethers.JsonRpcProvider(RPC_URL)
         const unifespWallet = new ethers.Wallet(UNIFESP_PRIVATE_KEY, provider)
-        const contrato = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, unifespWallet)
+        const contrato = new ethers.Contract(getContractAddress(), CONTRACT_ABI, unifespWallet)
         const tx = await contrato.adicionarCreditos(ra, parseInt(quantidade))
         await tx.wait()
         res.redirect(`/creditos?msg=${quantidade} créditos adicionados para RA ${ra}`)
@@ -232,8 +233,7 @@ app.get('/status', async (req, res) => {
         <tr><td><strong>Blockchain (Hardhat)</strong></td><td>${blockchain}</td></tr>
         <tr><td><strong>Agente Veramo (UNIFESP)</strong></td><td>${veramo}</td></tr>
         <tr><td><strong>Carteira do Aluno</strong></td><td>✅ <a href="http://192.168.15.7:3001" target="_blank">http://192.168.15.7:3001</a></td></tr>
-        <tr><td><strong>Terminal RU</strong></td><td>✅ <a href="https://pending-unvarying-dash.ngrok-free.dev" target="_blank">ngrok ativo</a></td></tr>
-      </table>
+<tr><td><strong>Terminal RU</strong></td><td>✅ <a href="https://pending-unvarying-dash.ngrok-free.dev" target="_blank">ngrok ativo</a></td></tr>      </table>
     </div>
   `))
 })
