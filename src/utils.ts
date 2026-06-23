@@ -13,12 +13,13 @@ export function getLocalIP(): string {
     return '127.0.0.1'
 }
 
-export function getContractAddress(): string {
+export function getContractAddress(name: 'creditoRU' | 'revocationRegistry' = 'creditoRU'): string {
     const file = './credentials/contract-address.json'
     if (!existsSync(file)) {
         throw new Error('contract-address.json não encontrado. Rode o deploy primeiro.')
     }
-    return JSON.parse(readFileSync(file, 'utf-8')).address
+    const data = JSON.parse(readFileSync(file, 'utf-8'))
+    return data[name] || data.address
 }
 
 export async function getNgrokUrl(): Promise<string | null> {

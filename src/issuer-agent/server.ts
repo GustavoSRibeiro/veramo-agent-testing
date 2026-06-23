@@ -2,10 +2,19 @@ import 'dotenv/config'
 import express from 'express'
 import bcrypt from 'bcrypt'
 import { ethers } from 'ethers'
+import { readFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+import { randomUUID } from 'crypto'
 import { agent } from './veramo/setup.js'
-import { agent as holderAgent } from '../holder-agent/veramo/setup.js'
 import { getLocalIP, getContractAddress, getNgrokUrl } from '../utils.js'
 import { getAllAlunos, getAluno, alunoExiste, saveAluno } from '../database.js'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const REGISTRY_ARTIFACT = JSON.parse(
+  readFileSync(join(__dirname, '../../hardhat/artifacts/contracts/RevocationRegistry.sol/RevocationRegistry.json'), 'utf-8')
+)
+const REGISTRY_ABI = REGISTRY_ARTIFACT.abi
 
 const app = express()
 app.use(express.json())
@@ -17,12 +26,34 @@ const UNIFESP_PRIVATE_KEY = process.env.UNIFESP_PRIVATE_KEY!
 const RPC_URL = process.env.HARDHAT_RPC_URL!
 const LOCAL_IP = getLocalIP()
 
+const ADMIN_USER = process.env.ADMIN_USER || 'admin'
+const ADMIN_PASS = process.env.ADMIN_PASS || 'admin123'
+const adminSessions = new Set<string>()
+
+// Helper para extrair o token de sessão do admin do cabeçalho de cookies com segurança
+function getAdminToken(cookieHeader: string | string[] | undefined): string | undefined {
+    if (!cookieHeader) return undefined
+    const headerStr = Array.isArray(cookieHeader) ? cookieHeader[0] : cookieHeader
+    const match = headerStr.match(/(?:^| )admin_token=([^;]*)/)
+    return match ? match[1] : undefined
+}
+
+// Middleware para exigir autenticação de administrador
+function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+    const token = getAdminToken(req.headers.cookie)
+    if (token && adminSessions.has(token)) {
+        next()
+        return
+    }
+    res.redirect('/login')
+}
+
 const CONTRACT_ABI = [
   'function adicionarCreditos(string memory ra, uint256 quantidade) public',
   'function consultarSaldo(string memory ra) public view returns (uint256)',
 ]
 
-const HTML = (content: string, title = 'Portal UNIFESP') => `
+const HTML = (content: string, showLogout = true, title = 'Portal UNIFESP') => `
 <!DOCTYPE html>
 <html>
 <head>
@@ -57,6 +88,7 @@ const HTML = (content: string, title = 'Portal UNIFESP') => `
     <a href="/">Alunos</a>
     <a href="/creditos">Créditos</a>
     <a href="/status">Status</a>
+    ${showLogout ? '<a href="/logout" style="float: right; color: #c0392b; text-decoration: none; font-weight: bold;">🚪 Sair</a>' : ''}
   </nav>
   ${content}
 </div>
@@ -65,10 +97,18 @@ const HTML = (content: string, title = 'Portal UNIFESP') => `
 `
 
 // Página principal — lista alunos + cadastro
-app.get('/', async (req, res) => {
+app.get('/', requireAdmin, async (req, res) => {
   const alunos = getAllAlunos()
   const provider = new ethers.JsonRpcProvider(RPC_URL)
-  const contrato = new ethers.Contract(getContractAddress(), CONTRACT_ABI, provider)
+  const contrato = new ethers.Contract(getContractAddress('creditoRU'), CONTRACT_ABI, provider)
+
+  let contractRevocation: ethers.Contract | null = null
+  try {
+    const revocationAddress = getContractAddress('revocationRegistry')
+    contractRevocation = new ethers.Contract(revocationAddress, REGISTRY_ABI, provider)
+  } catch (e: any) {
+    console.error('Erro ao instanciar contrato de revogação:', e.message)
+  }
 
   let rows = ''
   for (const aluno of alunos) {
@@ -76,12 +116,35 @@ app.get('/', async (req, res) => {
     try {
       saldo = (await contrato.consultarSaldo(aluno.ra)).toString()
     } catch { }
+
+    let isRevoked = false
+    if (contractRevocation && aluno.vc && aluno.vc.proof && aluno.vc.proof.jwt) {
+      try {
+        const jwt = aluno.vc.proof.jwt
+        const credentialHash = ethers.keccak256(ethers.toUtf8Bytes(jwt))
+        isRevoked = await contractRevocation.isRevoked(credentialHash)
+      } catch (e: any) {
+        console.error('Erro ao verificar revogação do RA:', aluno.ra, e.message)
+      }
+    }
+
+    let statusBadge = '<span class="badge">Ativa</span>'
+    let acao = ''
+    if (isRevoked) {
+      statusBadge = '<span class="badge" style="background: #fce8e8; color: #c0392b;">Revogada</span>'
+      acao = '<span style="color: #999;">—</span>'
+    } else {
+      statusBadge = '<span class="badge">Ativa</span>'
+      acao = `<form action="/aluno/${aluno.ra}/revogar" method="POST" style="display:inline;" onsubmit="return confirm('Tem certeza que deseja revogar esta credencial?');"><button type="submit" class="btn-danger" style="padding: 4px 10px; font-size: 11px; margin-top: 0; display: inline; width: auto; background: #c0392b;">Revogar</button></form>`
+    }
+
     rows += `<tr>
       <td>${aluno.nome}</td>
       <td>${aluno.ra}</td>
       <td>${aluno.curso}</td>
       <td><span class="badge">${saldo} créditos</span></td>
-      <td><a href="/aluno/${aluno.ra}/credencial" target="_blank">🔗 Link</a></td>
+      <td>${statusBadge}</td>
+      <td>${acao}</td>
     </tr>`
   }
 
@@ -97,22 +160,75 @@ app.get('/', async (req, res) => {
         <input name="ra" placeholder="RA (matrícula)" required />
         <input name="curso" placeholder="Curso" required />
         <input name="senha" type="password" placeholder="Senha do aluno" required />
+        <input name="did" placeholder="DID do Aluno (did:ethr:...)" required />
         <button type="submit">Cadastrar e Emitir Credencial</button>
       </form>
     </div>
     <div class="card">
       <h2>Alunos Cadastrados</h2>
       <table>
-        <thead><tr><th>Nome</th><th>RA</th><th>Curso</th><th>Saldo</th><th>Carteira</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="5">Nenhum aluno cadastrado.</td></tr>'}</tbody>
+        <thead><tr><th>Nome</th><th>RA</th><th>Curso</th><th>Saldo</th><th>Status</th><th>Ações</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6">Nenhum aluno cadastrado.</td></tr>'}</tbody>
       </table>
     </div>
   `))
 })
 
+// Rota para revogar a credencial de um aluno
+app.post('/aluno/:ra/revogar', requireAdmin, async (req, res) => {
+  const ra = req.params.ra as string
+  const aluno = getAluno(ra)
+  if (!aluno) {
+    res.redirect(`/?err=Aluno ${ra} não encontrado.`)
+    return
+  }
+
+  try {
+    const issuer = await agent.didManagerGetByAlias({ alias: 'unifesp-issuer' })
+    const kid = issuer.keys[0].kid
+    const issuerAddress = ethers.computeAddress('0x' + issuer.keys[0].publicKeyHex)
+
+    const provider = new ethers.JsonRpcProvider(RPC_URL)
+    const contractInterface = new ethers.Interface(REGISTRY_ABI)
+    const revocationAddress = getContractAddress('revocationRegistry')
+
+    if (!aluno.vc || !aluno.vc.proof || !aluno.vc.proof.jwt) {
+      throw new Error('Credencial do aluno não encontrada ou sem prova JWT.')
+    }
+
+    const jwt = aluno.vc.proof.jwt
+    const credentialHash = ethers.keccak256(ethers.toUtf8Bytes(jwt))
+
+    const nonce = await provider.getTransactionCount(issuerAddress)
+    const { chainId } = await provider.getNetwork()
+    const feeData = await provider.getFeeData()
+
+    const unsignedTx = {
+      to: revocationAddress,
+      data: contractInterface.encodeFunctionData('revoke', [credentialHash]),
+      nonce,
+      chainId,
+      gasLimit: 120000n,
+      maxFeePerGas: feeData.maxFeePerGas,
+      maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+      value: 0n,
+    }
+
+    const signedTx = await agent.keyManagerSignEthTX({ kid, transaction: unsignedTx })
+    const txResponse = await provider.broadcastTransaction(signedTx)
+    const receipt = await txResponse.wait()
+
+    console.log(`Credencial do RA ${ra} revogada na TX:`, receipt?.hash)
+    res.redirect(`/?msg=Credencial do aluno ${aluno.nome} foi revogada com sucesso!`)
+  } catch (err: any) {
+    console.error(err)
+    res.redirect(`/?err=Erro ao revogar credencial: ${err.message}`)
+  }
+})
+
 // Cadastrar aluno + emitir VC
-app.post('/cadastrar', async (req, res) => {
-  const { nome, ra, curso, senha } = req.body
+app.post('/cadastrar', requireAdmin, async (req, res) => {
+  const { nome, ra, curso, senha, did } = req.body
 
   if (alunoExiste(ra)) {
     res.redirect(`/?err=RA ${ra} já cadastrado.`)
@@ -122,16 +238,13 @@ app.post('/cadastrar', async (req, res) => {
   try {
     const issuer = await agent.didManagerGetByAlias({ alias: 'unifesp-issuer' })
 
-    // Criar DID para o aluno no agente do holder
-    const holderIdentifier = await holderAgent.didManagerCreate({ alias: `aluno-${ra}` })
-
-    // Emitir credencial
+    // Emitir credencial associada ao DID do aluno fornecido por ele
     const vc = await agent.createVerifiableCredential({
       credential: {
         issuer: { id: issuer.did },
         type: ['VerifiableCredential', 'CredencialUniversitariaRU'],
         credentialSubject: {
-          id: holderIdentifier.did,
+          id: did,
           ra,
           name: nome,
           course: curso,
@@ -143,7 +256,7 @@ app.post('/cadastrar', async (req, res) => {
 
     // Salvar no banco de dados
     const senhaHash = await bcrypt.hash(senha, 10)
-    saveAluno({ ra, nome, curso, senhaHash, did: holderIdentifier.did, vc })
+    saveAluno({ ra, nome, curso, senhaHash, did, vc })
 
     res.redirect(`/?msg=Aluno ${nome} cadastrado com sucesso!`)
   } catch (err: any) {
@@ -153,7 +266,7 @@ app.post('/cadastrar', async (req, res) => {
 })
 
 // Página de créditos
-app.get('/creditos', async (req, res) => {
+app.get('/creditos', requireAdmin, async (req, res) => {
   const alunos = getAllAlunos()
 
   let options = ''
@@ -181,12 +294,12 @@ app.get('/creditos', async (req, res) => {
 })
 
 // Adicionar créditos
-app.post('/creditos/adicionar', async (req, res) => {
+app.post('/creditos/adicionar', requireAdmin, async (req, res) => {
   const { ra, quantidade } = req.body
   try {
     const provider = new ethers.JsonRpcProvider(RPC_URL)
     const unifespWallet = new ethers.Wallet(UNIFESP_PRIVATE_KEY, provider)
-    const contrato = new ethers.Contract(getContractAddress(), CONTRACT_ABI, unifespWallet)
+    const contrato = new ethers.Contract(getContractAddress('creditoRU'), CONTRACT_ABI, unifespWallet)
     const tx = await contrato.adicionarCreditos(ra, parseInt(quantidade))
     await tx.wait()
     res.redirect(`/creditos?msg=${quantidade} créditos adicionados para RA ${ra}`)
@@ -195,8 +308,52 @@ app.post('/creditos/adicionar', async (req, res) => {
   }
 })
 
+// Rota GET: login do administrador
+app.get('/login', (req, res) => {
+  const err = req.query.err ? `<div class="alert alert-error">${req.query.err}</div>` : ''
+  res.send(HTML(`
+    ${err}
+    <div class="card" style="max-width: 400px; margin: 50px auto 0;">
+      <h2>🔑 Login do Administrador</h2>
+      <form action="/login" method="POST">
+        <input name="usuario" placeholder="Usuário" required />
+        <input name="senha" type="password" placeholder="Senha" required />
+        <button type="submit" style="width: 100%;">Entrar</button>
+      </form>
+    </div>
+  `, false, 'Login - Portal UNIFESP'))
+})
+
+// Rota POST: login do administrador
+app.post('/login', (req, res) => {
+  const { usuario, senha } = req.body
+  if (usuario === ADMIN_USER && senha === ADMIN_PASS) {
+    const token = randomUUID()
+    adminSessions.add(token)
+    res.cookie('admin_token', token, {
+      httpOnly: true,
+      maxAge: 30 * 60 * 1000, // 30 minutos
+      sameSite: 'lax',
+      secure: false
+    })
+    res.redirect('/')
+  } else {
+    res.redirect('/login?err=Usuário ou senha incorretos.')
+  }
+})
+
+// Rota GET: logout do administrador
+app.get('/logout', (req, res) => {
+  const token = getAdminToken(req.headers.cookie)
+  if (token) {
+    adminSessions.delete(token)
+  }
+  res.clearCookie('admin_token')
+  res.redirect('/login')
+})
+
 // Status do sistema
-app.get('/status', async (req, res) => {
+app.get('/status', requireAdmin, async (req, res) => {
   let blockchain = '❌ Offline'
   let veramo = '❌ Offline'
 

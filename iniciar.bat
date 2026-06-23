@@ -7,14 +7,14 @@ start "Hardhat Node" cmd /k "cd hardhat && npx hardhat node"
 timeout /t 3 /nobreak > nul
 
 echo Fazendo deploy do contrato...
-start "Deploy" cmd /k "cd hardhat && npx hardhat ignition deploy ignition/modules/CreditoRU.ts --network localhost --parameters ignition/parameters.json && echo Deploy concluido! && pause"
+start "Deploy" cmd /k "cd hardhat && npx hardhat run scripts/deploy-credito-ru.ts --network localhost && echo Deploy concluido! && pause"
 
 timeout /t 8 /nobreak > nul
 
-echo Subindo servidores...
-start "Portal UNIFESP" cmd /k "npx tsx src/issuer-agent/server.ts"
-start "Carteira Aluno" cmd /k "npx tsx src/holder-agent/server.ts"
-start "Terminal RU" cmd /k "npx tsx src/verifier/server.ts"
+echo Subindo servidores (com auto-reload)...
+start "Portal UNIFESP" cmd /k "npx tsx watch src/issuer-agent/server.ts"
+start "Carteira Aluno" cmd /k "npx tsx watch src/holder-agent/server.ts"
+start "Terminal RU" cmd /k "npx tsx watch src/verifier/server.ts"
 
 echo Subindo ngrok...
 start "ngrok" cmd /k "%LOCALAPPDATA%\Microsoft\WinGet\Packages\Ngrok.Ngrok_Microsoft.Winget.Source_8wekyb3d8bbwe\ngrok.exe http 3002"

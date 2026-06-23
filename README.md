@@ -189,15 +189,14 @@ ngrok http 3002
 
 ## 📱 Fluxo de Uso
 
-### 1. Cadastrar Aluno (Portal UNIFESP)
+### 1. Cadastrar Aluno (Verdadeira Custódia - SSI)
 
-1. Acesse `http://localhost:3000`
-2. Preencha: Nome, RA, Curso e Senha
-3. Clique em **"Cadastrar e Emitir Credencial"**
-4. O sistema automaticamente:
-   - Cria um DID para o aluno (Veramo)
-   - Emite uma Credencial Verificável (VC) assinada pela UNIFESP
-   - Salva os dados no banco de dados SQLite
+1. O aluno acessa a página de geração de identidade da carteira em `http://localhost:3001/gerar-did`.
+2. Insere seu RA e clica em **"Gerar Chaves e DID"**. As chaves criptográficas e o DID são criados localmente pelo agente do portador (Holder).
+3. O aluno copia o DID gerado (ex: `did:ethr:sepolia:0x...`).
+4. Acesse o **Portal UNIFESP** (`http://localhost:3000`).
+5. Preencha o cadastro (Nome, RA, Curso, Senha) e cole o DID copiado no campo **"DID do Aluno"**.
+6. Clique em **"Cadastrar e Emitir Credencial"**. O portal emitirá uma Credencial Verificável (VC) vinculada a esse DID e salvará as informações no banco de dados SQLite.
 
 ### 2. Adicionar Créditos (Portal UNIFESP)
 
@@ -226,11 +225,12 @@ ngrok http 3002
 
 ## 🔐 Segurança
 
-- **Senhas** são armazenadas com hash bcrypt (10 rounds)
-- **Sessões** são protegidas por cookies HTTP-only com expiração de 10 minutos
-- **QR Codes** são de uso único e expiram em 2 minutos
-- **Credenciais** são assinadas criptograficamente via JWT (ES256K)
-- **Smart Contract** restringe operações a endereços autorizados
+- **Acesso Administrativo**: O Portal UNIFESP é protegido por login de administrador (`admin`/`admin123` por padrão), controlado por cookies HTTP-only (`admin_token`) com expiração de 30 minutos.
+- **Autenticação de Estudantes**: O acesso à carteira digital exige a senha cadastrada pelo aluno, protegida por hash `bcrypt` (10 rounds) no banco de dados SQLite.
+- **Segurança de Cookies**: Sessões de administrador e estudantes utilizam cookies configurados com as propriedades `httpOnly: true` e `sameSite: 'lax'` para prevenção de ataques XSS e CSRF.
+- **QR Codes (VPs)**: As apresentações geradas para o QR Code são de uso único e expiram em 2 minutos, prevenindo ataques de replay.
+- **Credenciais (VCs)**: São assinadas criptograficamente via JWT (ES256K) emitido de forma exclusiva pelo DID da UNIFESP.
+- **Smart Contracts**: Funções de modificação de saldo e de revogação de credenciais exigem chamadas de transações assinadas on-chain por endereços Ethereum autorizados (UNIFESP/RU).
 
 ## 🔗 Smart Contract — CreditoRU
 
@@ -243,9 +243,21 @@ O contrato `CreditoRU.sol` gerencia os créditos dos alunos na blockchain:
 | `consumirCredito(ra)` | Debita 1 crédito e registra o consumo |
 | `definirAutorizado(conta, bool)` | Autoriza/desautoriza uma conta |
 
-## 🔮 Funcionalidades Futuras
+## 🔗 Smart Contract — RevocationRegistry
 
-- **Revogação de Credenciais** — Registro on-chain para revogar credenciais de alunos desligados (`RevocationRegistry.sol` já implementado)
+O contrato `RevocationRegistry.sol` gerencia o status de revogação das credenciais:
+
+| Função | Descrição |
+|---|---|
+| `revoke(credentialHash)` | Revoga uma credencial (restrito ao DID UNIFESP) |
+| `isRevoked(credentialHash)` | Consulta se uma credencial foi revogada |
+
+## 🛡️ Revogação de Credenciais
+
+A revogação de credenciais do sistema é totalmente on-chain:
+1. No Portal UNIFESP, ao lado de cada aluno cadastrado, existe o botão **"Revogar"**.
+2. Ao clicar, a UNIFESP assina uma transação chamando `revoke(hash)` do `RevocationRegistry` usando as chaves de seu DID gerenciadas pelo Veramo KMS.
+3. O Terminal RU consulta esse contrato na verificação do QR Code. Se o hash do JWT da credencial constar como revogado, o acesso é **negado**, e o link da carteira do aluno é desativado no portal.
 
 ## 📚 Conceitos e Padrões
 
