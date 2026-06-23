@@ -6,11 +6,17 @@ import { readFileSync, existsSync } from 'fs'
 import { agent } from './veramo/setup.js'
 import { randomUUID } from 'crypto'
 import { getLocalIP } from '../utils.js'
+import { ethers } from 'ethers'
+import { getContractAddress } from '../utils.js'
 
 const app = express()
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 const PORT = 3001
+const RPC_URL = process.env.HARDHAT_RPC_URL!
+const CONTRACT_ABI = [
+    'function consultarSaldo(string memory ra) public view returns (uint256)',
+]
 
 const DB_FILE = './credentials/alunos.json'
 
@@ -127,14 +133,23 @@ app.get('/aluno/:ra/qr', async (req, res) => {
         const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 280 })
         const expiraDate = new Date(expira)
 
+        // Consulta saldo no contrato
+        let saldo = '—'
+        try {
+            const provider = new ethers.JsonRpcProvider(RPC_URL)
+            const contrato = new ethers.Contract(getContractAddress(), CONTRACT_ABI, provider)
+            saldo = (await contrato.consultarSaldo(ra)).toString()
+        } catch { }
+
         res.send(HTML(`
-      <h2>🎓 Carteira UNIFESP</h2>
-      <p><strong>${aluno.nome}</strong></p>
-      <p>RA: ${ra} — ${aluno.curso}</p>
-      <img src="${qrDataUrl}" alt="QR Code" />
-      <p class="validade">⏱ Válido até ${expiraDate.toLocaleTimeString('pt-BR')}</p>
-      <button onclick="location.reload()">🔄 Gerar novo QR</button>
-    `))
+        <h2>🎓 Carteira UNIFESP</h2>
+        <p><strong>${aluno.nome}</strong></p>
+        <p>RA: ${ra} — ${aluno.curso}</p>
+        <p style="font-size:18px; color:#003580; font-weight:bold; margin-top:12px;">🍽️ Créditos: ${saldo}</p>
+        <img src="${qrDataUrl}" alt="QR Code" />
+        <p class="validade">⏱ Válido até ${expiraDate.toLocaleTimeString('pt-BR')}</p>
+        <button onclick="location.reload()">🔄 Gerar novo QR</button>
+        `))
     } catch (err: any) {
         console.error(err)
         res.send(HTML(`<h2>❌ Erro ao gerar QR</h2><p>${err.message}</p>`))
